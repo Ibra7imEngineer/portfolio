@@ -4616,6 +4616,8 @@
       const STORAGE_KEY = "portfolio_data";
       const VIRTUAL_FS_STORAGE_KEY = "project_file_system";
       const PORTFOLIO_CERTS_KEY = "portfolio_certs";
+      const CSV_PORTFOLIO_URL =
+        "https://docs.google.com/spreadsheets/d/e/2PACX-1vREIP9ZE_DlCVXmKLCnmEI_h8GdV6_tThLu6QZZIZ3rE4Oy0kQhM_6arbe_T-v5e1MccO13C6IyxD-k/pub?output=csv";
       const CHAT_API_URL = "/api/chat"; // use backend endpoint for chat requests
       const CHAT_BACKEND_ENABLED = true; // set false if you want to disable chat entirely
 
@@ -4710,6 +4712,273 @@
 
       function safeSetJSONLocalStorage(key, obj) {
         return safeSetLocalStorage(key, JSON.stringify(obj));
+      }
+
+      function hideInitialLoadingScreen() {
+        const loadingElement =
+          document.getElementById("loadingScreen") ||
+          document.querySelector(".loading-screen") ||
+          document.querySelector(".loader");
+        if (loadingElement) {
+          loadingElement.style.display = "none";
+        }
+      }
+
+      function getField(record, ...keys) {
+        for (const key of keys) {
+          if (!key) continue;
+          const value = record[key];
+          if (typeof value === "string" && value.trim()) {
+            return value.trim();
+          }
+        }
+        return "";
+      }
+
+      function parseCsvText(csvText) {
+        if (!csvText || !csvText.trim()) return [];
+        const rows = [];
+        let currentField = "";
+        let currentRow = [];
+        let insideQuotes = false;
+
+        for (let i = 0; i < csvText.length; i += 1) {
+          const char = csvText[i];
+          const nextChar = csvText[i + 1];
+
+          if (insideQuotes) {
+            if (char === '"') {
+              if (nextChar === '"') {
+                currentField += '"';
+                i += 1;
+              } else {
+                insideQuotes = false;
+              }
+            } else {
+              currentField += char;
+            }
+            continue;
+          }
+
+          if (char === '"') {
+            insideQuotes = true;
+            continue;
+          }
+
+          if (char === ",") {
+            currentRow.push(currentField);
+            currentField = "";
+            continue;
+          }
+
+          if (char === "\r") {
+            continue;
+          }
+
+          if (char === "\n") {
+            currentRow.push(currentField);
+            rows.push(currentRow.slice());
+            currentRow = [];
+            currentField = "";
+            continue;
+          }
+
+          currentField += char;
+        }
+
+        if (currentField !== "" || currentRow.length > 0) {
+          currentRow.push(currentField);
+          rows.push(currentRow.slice());
+        }
+
+        if (rows.length === 0) return [];
+        const headers = rows.shift().map((header) => header.trim());
+        return rows
+          .filter((row) => row.some((value) => String(value).trim() !== ""))
+          .map((row) => {
+            const record = {};
+            for (let col = 0; col < headers.length; col += 1) {
+              record[headers[col]] =
+                row[col] !== undefined ? String(row[col]).trim() : "";
+            }
+            return record;
+          });
+      }
+
+      function normalizeCsvRecord(rawRecord) {
+        const normalized = {};
+        Object.entries(rawRecord).forEach(([key, value]) => {
+          const trimmedKey = String(key || "").trim();
+          const normalizedValue = String(value || "").trim();
+          normalized[trimmedKey] = normalizedValue;
+          normalized[trimmedKey.toLowerCase()] = normalizedValue;
+          normalized[trimmedKey.replace(/\s+/g, "_").toLowerCase()] =
+            normalizedValue;
+        });
+        return normalized;
+      }
+
+      function splitCsvRecords(records) {
+        const projects = [];
+        const certificates = [];
+
+        records.forEach((rawRecord) => {
+          const row = normalizeCsvRecord(rawRecord);
+          const typeTag = (
+            row.type ||
+            row.resource_type ||
+            row.record_type ||
+            ""
+          ).toLowerCase();
+
+          const hasCertKeys =
+            Boolean(
+              row.cert_id ||
+              row.issuer ||
+              row.issue_date ||
+              row.credential_url ||
+              row.credentialurl ||
+              row.url,
+            ) &&
+            !Boolean(
+              row.live_url ||
+              row.source_url ||
+              row.github ||
+              row.demo ||
+              row.description,
+            );
+
+          const hasProjectKeys = Boolean(
+            row.project_id ||
+            row.category ||
+            row.tags ||
+            row.tech ||
+            row.live_url ||
+            row.source_url ||
+            row.github ||
+            row.description,
+          );
+
+          if (typeTag.includes("cert") || (hasCertKeys && !hasProjectKeys)) {
+            certificates.push(row);
+          } else if (
+            typeTag.includes("project") ||
+            (hasProjectKeys && !hasCertKeys)
+          ) {
+            projects.push(row);
+          } else if (row.title && row.issuer && row.date) {
+            certificates.push(row);
+          } else {
+            projects.push(row);
+          }
+        });
+
+        return { projects, certificates };
+      }
+
+      function normalizeCsvProjects(records) {
+        return records.map((row) => {
+          const title =
+            getField(row, "title", "name", "project_title", "project name") ||
+            "";
+          const description =
+            getField(
+              row,
+              "description",
+              "details",
+              "project_description",
+              "project details",
+            ) || "";
+          const bulletsText =
+            getField(
+              row,
+              "bullets",
+              "bullet_points",
+              "description",
+              "details",
+            ) || "";
+          const techText =
+            getField(row, "tech", "tags", "technology", "stack") || "";
+          const links = {
+            demo:
+              getField(row, "live_url", "demo", "website", "project_url") ||
+              "#",
+            github:
+              getField(row, "source_url", "github", "repo", "repository") ||
+              "#",
+          };
+          const rawTags = techText
+            .split(",")
+            .map((item) => item.trim())
+            .filter(Boolean);
+
+          return {
+            id:
+              getField(row, "project_id", "id", "project id") ||
+              `proj-${Math.random().toString(36).slice(2, 10)}`,
+            project_id: getField(row, "project_id", "id", "project id") || "",
+            title,
+            category:
+              getField(row, "category", "tag", "project_category") ||
+              "Front-End",
+            tag: getField(row, "tag", "category", "project_category") || "",
+            dates: getField(row, "dates", "date", "project_date") || "",
+            description,
+            bullets: bulletsText
+              .split(/\r?\n|\|\||;|\t/)
+              .map((line) => line.trim())
+              .filter(Boolean),
+            details:
+              getField(row, "details", "description", "project_details") || "",
+            tech: rawTags,
+            links,
+            image:
+              getField(row, "image", "image_path", "image_url", "image url") ||
+              "",
+          };
+        });
+      }
+
+      function normalizeCsvCertificates(records) {
+        return records.map((row) => ({
+          id:
+            getField(
+              row,
+              "cert_id",
+              "id",
+              "certificate_id",
+              "certificate id",
+            ) || `cert-${Math.random().toString(36).slice(2, 10)}`,
+          cert_id:
+            getField(
+              row,
+              "cert_id",
+              "id",
+              "certificate_id",
+              "certificate id",
+            ) || "",
+          name:
+            getField(row, "title", "name", "certificate_name", "cert_name") ||
+            "",
+          issuer: getField(row, "issuer", "provider", "organization") || "",
+          date: getField(row, "issue_date", "date", "issued") || "",
+          url:
+            getField(
+              row,
+              "credential_url",
+              "credentialurl",
+              "url",
+              "certificate_url",
+            ) || "",
+          image:
+            getField(
+              row,
+              "image",
+              "image_path",
+              "image_url",
+              "certificate_image",
+            ) || "",
+        }));
       }
 
       const DEFAULT_PORTFOLIO_CERTS = [
@@ -5512,100 +5781,49 @@
 
       // Fetch + initialize data from the Google Sheets Web App
       async function fetchAndInitializeRemoteData() {
-        if (!GOOGLE_SHEETS_WEBAPP_URL) return null;
         try {
-          const resp = await fetch(GOOGLE_SHEETS_WEBAPP_URL, {
+          const response = await fetch(CSV_PORTFOLIO_URL, {
             method: "GET",
-            headers: { Accept: "application/json" },
             mode: "cors",
+            cache: "no-store",
           });
 
-          if (!resp.ok)
-            throw new Error(`Network response was not ok (${resp.status})`);
-
-          const json = await resp.json();
-          if (!json || json.status !== "success" || !json.data) {
-            console.warn("Unexpected remote payload", json);
-            return null;
+          if (!response.ok) {
+            throw new Error(`Network response was not ok (${response.status})`);
           }
 
-          const { projects = [], certificates = [] } = json.data;
+          const csvText = await response.text();
+          const rawRecords = parseCsvText(csvText);
+          if (!Array.isArray(rawRecords) || rawRecords.length === 0) {
+            throw new Error("CSV payload did not contain any records.");
+          }
 
-          // Local dedupe helper
+          const { projects: csvProjects, certificates: csvCertificates } =
+            splitCsvRecords(rawRecords);
+
           const dedupeById = (arr, key = "id") => {
             const seen = new Set();
             return (arr || []).filter((item) => {
-              const v = item && item[key];
-              if (seen.has(v)) return false;
-              seen.add(v);
+              const value = item && item[key];
+              if (!value || seen.has(value)) return false;
+              seen.add(value);
               return true;
             });
           };
 
-          // Clear existing arrays first to avoid accidental append/duplication
-          portfolioState.projects = [];
-          portfolioCerts = [];
+          portfolioState.projects = normalizeCsvProjects(csvProjects || []);
+          portfolioCerts = normalizeCsvCertificates(csvCertificates || []);
 
-          // Normalize projects into the local shape used by the renderer
-          const newProjects = (projects || []).map((p) => ({
-            id:
-              p.project_id ||
-              p.id ||
-              `proj-${Math.random().toString(36).slice(2, 8)}`,
-            project_id: p.project_id || p.id || "",
-            title: p.title || "",
-            category: p.category || p.cat || "Front-End",
-            tag: p.tag || p.category || "",
-            dates: p.dates || p.date || "",
-            description: p.description || "",
-            bullets: Array.isArray(p.bullets)
-              ? p.bullets
-              : [p.description, p.details]
-                  .filter(Boolean)
-                  .join("\n")
-                  .toString()
-                  .split("\n")
-                  .map((line) => line.trim())
-                  .filter(Boolean),
-            details: p.details || p.description || "",
-            tech: (p.tags || p.tech || "")
-              .toString()
-              .split(",")
-              .map((s) => s.trim())
-              .filter(Boolean),
-            links: {
-              demo: p.live_url || p.liveUrl || p.demo || "#",
-              github: p.source_url || p.sourceUrl || p.github || "#",
-            },
-            image: p.image_path || p.image || "",
-          }));
+          portfolioState.projects = dedupeById(portfolioState.projects, "id");
+          portfolioCerts = dedupeById(portfolioCerts, "id");
 
-          // Normalize certificates into local shape
-          const newCerts = (certificates || []).map((c) => ({
-            id:
-              c.cert_id ||
-              c.id ||
-              `cert-${Math.random().toString(36).slice(2, 8)}`,
-            cert_id: c.cert_id || c.id || "",
-            name: c.title || c.name || "",
-            issuer: c.issuer || "",
-            date: c.issue_date || c.date || "",
-            url: c.credential_url || c.credentialUrl || c.url || "",
-            image: c.image_path || c.image || "",
-          }));
-
-          // Deduplicate and assign authoritative arrays (replace, don't append)
-          portfolioState.projects = dedupeById(newProjects, "id");
-          portfolioCerts = dedupeById(newCerts, "id");
-
-          // Persist into local storage so admin UI also reflects remote state
           safeSetJSONLocalStorage(STORAGE_KEY, portfolioState);
           safeSetJSONLocalStorage(PORTFOLIO_CERTS_KEY, portfolioCerts);
 
-          // Render updated UI
           renderAll();
           populateAdminLists();
-          toast("Portfolio data updated from remote", "success", 1800);
+          toast("Portfolio data updated from CSV source", "success", 1800);
+
           return {
             projects: portfolioState.projects,
             certificates: portfolioCerts,
@@ -7739,13 +7957,20 @@
 
       // initial render of local data for immediate UI responsiveness
       renderAll();
+      hideInitialLoadingScreen();
 
-      // When DOM is ready, fetch authoritative data from Google Sheets WebApp
-      document.addEventListener("DOMContentLoaded", () => {
+      // Fetch fresh CSV data in the background and update UI when it arrives
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", () => {
+          fetchAndInitializeRemoteData().catch((e) =>
+            console.warn("Remote initialization failed:", e),
+          );
+        });
+      } else {
         fetchAndInitializeRemoteData().catch((e) =>
           console.warn("Remote initialization failed:", e),
         );
-      });
+      }
 
       // Prefer same-tab navigation; only open external links in a new tab
       document.querySelectorAll("a[href]").forEach((link) => {
