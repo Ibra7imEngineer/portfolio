@@ -4616,8 +4616,10 @@
       const STORAGE_KEY = "portfolio_data";
       const VIRTUAL_FS_STORAGE_KEY = "project_file_system";
       const PORTFOLIO_CERTS_KEY = "portfolio_certs";
-      const CSV_PORTFOLIO_URL =
-        "https://docs.google.com/spreadsheets/d/e/2PACX-1vREIP9ZE_DlCVXmKLCnmEI_h8GdV6_tThLu6QZZIZ3rE4Oy0kQhM_6arbe_T-v5e1MccO13C6IyxD-k/pub?output=csv";
+      const CSV_PROJECTS_URL =
+        "https://docs.google.com/spreadsheets/d/e/2PACX-1vREIP9ZE_DlCVXmKLCnmEI_h8GdV6_tThLu6QZZIZ3rE4Oy0kQhM_6arbe_T-v5e1MccO13C6IyxD-k/pub?gid=85240163&single=true&output=csv";
+      const CSV_CERTIFICATES_URL =
+        "https://docs.google.com/spreadsheets/d/e/2PACX-1vREIP9ZE_DlCVXmKLCnmEI_h8GdV6_tThLu6QZZIZ3rE4Oy0kQhM_6arbe_T-v5e1MccO13C6IyxD-k/pub?gid=1232260121&single=true&output=csv";
       const CHAT_API_URL = "/api/chat"; // use backend endpoint for chat requests
       const CHAT_BACKEND_ENABLED = true; // set false if you want to disable chat entirely
 
@@ -5780,26 +5782,32 @@
       }
 
       // Fetch + initialize data from the Google Sheets Web App
+      async function fetchCsvText(url) {
+        const response = await fetch(url, {
+          method: "GET",
+          mode: "cors",
+          cache: "no-store",
+        });
+
+        if (!response.ok) {
+          throw new Error(`Network response was not ok (${response.status})`);
+        }
+
+        return response.text();
+      }
+
       async function fetchAndInitializeRemoteData() {
         try {
-          const response = await fetch(CSV_PORTFOLIO_URL, {
-            method: "GET",
-            mode: "cors",
-            cache: "no-store",
-          });
+          const [projectsText, certificatesText] = await Promise.all([
+            fetchCsvText(CSV_PROJECTS_URL),
+            fetchCsvText(CSV_CERTIFICATES_URL),
+          ]);
 
-          if (!response.ok) {
-            throw new Error(`Network response was not ok (${response.status})`);
-          }
+          const projectRecords = parseCsvText(projectsText);
+          const certificateRecords = parseCsvText(certificatesText);
 
-          const csvText = await response.text();
-          const rawRecords = parseCsvText(csvText);
-          if (!Array.isArray(rawRecords) || rawRecords.length === 0) {
-            throw new Error("CSV payload did not contain any records.");
-          }
-
-          const { projects: csvProjects, certificates: csvCertificates } =
-            splitCsvRecords(rawRecords);
+          portfolioState.projects = normalizeCsvProjects(projectRecords || []);
+          portfolioCerts = normalizeCsvCertificates(certificateRecords || []);
 
           const dedupeById = (arr, key = "id") => {
             const seen = new Set();
@@ -5811,9 +5819,6 @@
             });
           };
 
-          portfolioState.projects = normalizeCsvProjects(csvProjects || []);
-          portfolioCerts = normalizeCsvCertificates(csvCertificates || []);
-
           portfolioState.projects = dedupeById(portfolioState.projects, "id");
           portfolioCerts = dedupeById(portfolioCerts, "id");
 
@@ -5822,7 +5827,7 @@
 
           renderAll();
           populateAdminLists();
-          toast("Portfolio data updated from CSV source", "success", 1800);
+          toast("Portfolio data updated from CSV sources", "success", 1800);
 
           return {
             projects: portfolioState.projects,
